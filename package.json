@@ -1,0 +1,19 @@
+{
+  "name": "unslop-pixelart",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nettoie le faux pixel art genere par IA et convertit n'importe quelle image en vrai pixel art (sans IA).",
+  "main": "pixelclean-core.js",
+  "bin": {
+    "unslop-pixelart": "cli.js"
+  },
+  "scripts": {
+    "test": "node test/run-tests.js && node test/cli-test.js && node test/server-test.js"
+  },
+  "dependencies": {
+    "sharp": "0.34.5"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}

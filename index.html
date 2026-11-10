@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel Clean</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Pixel Clean</h1>
+  <div class="actions" id="fileActions">
+    <button type="button" id="btnFiles">Choisir des fichiers</button>
+    <button type="button" id="btnFolder">Choisir un dossier</button>
+    <span class="sep"></span>
+    <button type="button" id="btnZip" class="primary" disabled>Tout télécharger (.zip)</button>
+    <button type="button" id="btnSaveDir" disabled hidden>Enregistrer dans un dossier…</button>
+    <button type="button" id="btnClear" disabled>Vider</button>
+  </div>
+  <div class="actions" id="serverActions" hidden>
+    <span class="conn muted" id="connInfo"></span>
+    <button type="button" id="btnMissing" class="primary">Traiter les manquants</button>
+  </div>
+  <input type="file" id="inFiles" multiple accept=".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif" hidden>
+  <input type="file" id="inFolder" webkitdirectory multiple hidden>
+</header>
+
+<div class="progress" id="progress" hidden><div class="bar" id="progressBar"></div><span id="progressText"></span></div>
+<nav class="filters" id="filters" hidden aria-label="Filtrer par statut"></nav>
+
+<main class="layout">
+  <section class="content" id="content">
+    <div id="gallery">
+      <div class="drop-hint" id="dropHint">
+        <p>Déposez des images ou un dossier ici.</p>
+        <p class="muted">PNG, JPG, WEBP, GIF (1re image). Les fichiers d'origine ne sont jamais modifiés.</p>
+      </div>
+      <div id="folders"></div>
+    </div>
+
+    <div id="detail" hidden>
+      <div class="detail-head">
+        <button type="button" id="btnBack" title="Échap">← Galerie</button>
+        <div class="detail-title">
+          <strong id="vName"></strong>
+          <span id="vInfo" class="muted"></span>
+        </div>
+        <div class="detail-actions">
+          <button type="button" id="btnPrev" title="Image précédente (←)" aria-label="Image précédente">‹</button>
+          <button type="button" id="btnNext" title="Image suivante (→)" aria-label="Image suivante">›</button>
+          <button type="button" id="btnReprocess">Retraiter</button>
+          <button type="button" id="btnValidate" hidden>Valider</button>
+          <button type="button" id="btnReview" hidden>À revoir</button>
+        </div>
+      </div>
+      <div class="build">
+        <figure class="small">
+          <figcaption>Original</figcaption>
+          <div class="pane"><canvas id="cvBefore"></canvas></div>
+        </figure>
+        <figure class="big">
+          <figcaption>
+            <span>Pixel art <span id="vNote" class="muted"></span></span>
+            <span class="tools">
+              <button type="button" id="btnSkip" hidden title="Espace">Passer l'animation</button>
+              <label class="check"><input type="checkbox" id="optAnim"> Animer</label>
+              <label class="check"><input type="checkbox" id="showGrid"> Grille</label>
+              <span class="zoom">
+                <button type="button" id="zoomOut" aria-label="Zoom arrière">−</button>
+                <span id="zoomVal">×1</span>
+                <button type="button" id="zoomIn" aria-label="Zoom avant">+</button>
+                <button type="button" id="zoomFit">Ajuster</button>
+              </span>
+            </span>
+          </figcaption>
+          <div class="pane checker" id="afterPane"><canvas id="cvAfter"></canvas></div>
+        </figure>
+      </div>
+      <details class="fix" id="fixBox">
+        <summary>Corriger cette image</summary>
+        <div class="fix-grid">
+          <label>Taille finale
+            <select id="ovMode">
+              <option value="">Comme le lot</option>
+              <option value="auto">Auto (taille détectée)</option>
+              <option value="fixed">Fixe</option>
+            </select>
+          </label>
+          <label>Hauteur (px)
+            <input type="number" id="ovTarget" min="1" max="1024" step="1" placeholder="lot">
+          </label>
+          <label>Largeur (px)
+            <input type="number" id="ovWidth" min="1" max="1024" step="1" placeholder="lot">
+          </label>
+          <label>Taille de pixel (px)
+            <input type="number" id="ovSize" min="1" max="256" step="0.01" placeholder="auto">
+          </label>
+          <label>Décalage X (px)
+            <input type="number" id="ovOffX" step="0.25" placeholder="auto">
+          </label>
+          <label>Décalage Y (px)
+            <input type="number" id="ovOffY" step="0.25" placeholder="auto">
+          </label>
+          <div class="fix-buttons">
+            <button type="button" id="ovApply" hidden>Appliquer et retraiter</button>
+            <button type="button" id="ovReset">Réinitialiser</button>
+          </div>
+        </div>
+        <p class="muted small">La taille de pixel et le décalage forcent la grille détectée (la taille finale est alors celle de la grille).</p>
+      </details>
+    </div>
+  </section>
+
+  <aside class="settings" id="settings" aria-label="Réglages">
+    <h2>Réglages</h2>
+    <fieldset class="size-box">
+      <legend>Taille finale</legend>
+      <label class="check"><input type="radio" name="sizeMode" id="sizeAuto" value="auto"> Auto (taille détectée)</label>
+      <label class="check"><input type="radio" name="sizeMode" id="sizeFixed" value="fixed" checked> Fixe</label>
+      <div class="two">
+        <label>Hauteur (px)
+          <input type="number" id="optHeight" min="1" max="1024" step="1" value="32">
+        </label>
+        <label>Largeur (px)
+          <input type="number" id="optWidth" min="1" max="1024" step="1" placeholder="libre">
+        </label>
+      </div>
+      <p class="muted small" id="sizeHelp"></p>
+    </fieldset>
+    <label>Couleurs
+      <select id="optColors">
+        <option value="0">Auto</option>
+        <option value="4">4</option>
+        <option value="6">6</option>
+        <option value="8">8</option>
+        <option value="12">12</option>
+        <option value="16">16</option>
+        <option value="24">24</option>
+        <option value="32">32</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" id="optShared" checked> Palette commune à tout le lot</label>
+    <div class="row">
+      <span>Palette imposée</span>
+      <button type="button" id="btnPal">Charger…</button>
+      <button type="button" id="btnPalClear" hidden>Retirer</button>
+      <input type="file" id="inPal" accept=".hex,.gpl,.txt,.png,image/png" hidden>
+    </div>
+    <p class="muted small" id="palName">.hex, .gpl (GIMP) ou image PNG de palette</p>
+
+    <label>Fond
+      <select id="optBg">
+        <option value="auto">Rendre transparent (auto)</option>
+        <option value="keep">Garder</option>
+      </select>
+    </label>
+    <div class="two">
+      <label>Tolérance du fond
+        <input type="number" id="optBgTol" min="0" max="255" step="1" value="40">
+      </label>
+      <label>Seuil alpha
+        <input type="number" id="optAlpha" min="1" max="255" step="1" value="128">
+      </label>
+    </div>
+    <label class="check"><input type="checkbox" id="optCleanup" checked> Nettoyer les pixels isolés</label>
+
+    <h3>Embellir</h3>
+    <label class="check"><input type="checkbox" id="optOutline"> Contour propre</label>
+    <select id="optOutlineMode" class="indent" aria-label="Couleur du contour">
+      <option value="darkest">Couleur la plus sombre</option>
+      <option value="selective">Contour sélectif</option>
+    </select>
+    <label class="check"><input type="checkbox" id="optPP"> Lignes pixel-perfect</label>
+
+    <h3>Export</h3>
+    <label>Agrandissement en plus du ×1
+      <select id="optScale">
+        <option value="0">Aucun</option>
+        <option value="2">×2</option>
+        <option value="3">×3</option>
+        <option value="4" selected>×4</option>
+        <option value="6">×6</option>
+        <option value="8">×8</option>
+        <option value="10">×10</option>
+      </select>
+    </label>
+
+    <details class="advanced">
+      <summary>Réglages avancés</summary>
+      <label class="check"><input type="checkbox" id="optAdaptive" checked> Grille adaptative (corrige la dérive)</label>
+      <p class="muted small">Sert quand une grille de pixels est utilisée (taille finale « Auto », ou taille de pixel réglée sur une image).</p>
+    </details>
+
+    <h3>Palette</h3>
+    <div class="swatches" id="swatches"></div>
+    <p class="muted small" id="palInfo"></p>
+  </aside>
+
+  <aside class="settings" id="project" hidden aria-label="Réglages du projet">
+    <h2>Réglages du projet</h2>
+    <p class="muted small" id="projConfig"></p>
+    <dl class="kv" id="projOpts"></dl>
+    <p class="muted small">Pour les changer : modifiez <code>unslop.config.json</code> (règles par sous-dossier possibles). Les corrections d'une image se font dans sa vue détaillée.</p>
+    <h3>Palette</h3>
+    <div class="swatches" id="projSwatches"></div>
+    <p class="muted small" id="projPalInfo"></p>
+  </aside>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="pixelclean-core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

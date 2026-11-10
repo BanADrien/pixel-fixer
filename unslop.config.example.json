@@ -1,0 +1,16 @@
+{
+  "source": "assets/raw",
+  "output": "assets/sprites",
+  "palette": "assets/palette.hex",
+  "height": 32,
+  "colors": 0,
+  "outline": "darkest",
+  "pixelPerfect": false,
+  "scale": 0,
+  "autoProcess": false,
+  "rules": [
+    { "match": "characters/**", "height": 32 },
+    { "match": "tiles/**", "height": 16, "background": "keep" },
+    { "match": "ui/**", "outline": "none" }
+  ]
+}
