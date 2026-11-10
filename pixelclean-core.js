@@ -35,7 +35,8 @@
     cleanOutline: false,   // embellissement : contour propre
     outlineMode: 'darkest',// 'darkest' | 'selective'
     pixelPerfect: false,   // embellissement : lignes pixel-perfect
-    sizeMode: 'fixed',     // 'fixed' : taille finale imposee a toutes les images ;
+    inkLines: true,        // conversion : traits d'encre de l'original -> lignes d'1 pixel
+    sizeMode: 'fixed',    // 'fixed' : taille finale imposee a toutes les images ;
                            // 'auto' : grille detectee si trouvee, sinon taille cible
     force: 'auto',         // 'auto' | 'grid' (grille detectee) | 'target' (taille cible)
     targetBy: 'height',    // 'height' | 'factor'
@@ -988,12 +989,149 @@
     return {
       grid: { size: Math.min(fx, fy), nx, ny, displayXs: xs, displayYs: ys, bbox: [bx0, by0, bw, bh] },
       cells: { nx, ny, opaque, model: 'target' },
-      target: { ww, wh, q, labs, cov, stroke, cxs, cys },
+      target: { ww, wh, q, labs, cov, stroke, cxs, cys, ink: o.inkLines === false ? null : inkAnalysis(ww, wh, cov, labs, stroke) },
       samples: Float32Array.from(samp),
     };
   }
 
+  // ------------------------------------------------- traits d'encre (contours)
+  // Les images IA ont des contours sombres de plusieurs pixels de large, plus
+  // ou moins baveux. Un vote par cellule les rendait en points noirs epars
+  // (trait a cheval sur deux cellules : aucune ne le garde, ou les deux) et
+  // un contour exterieur impose ("Contour propre") en dessinait la ou
+  // l'original n'en a pas. Ici on part des traits REELS de l'original :
+  //  - encre = pixel sombre ET plus sombre que ses voisins (creux sous la
+  //    fermeture, `stroke`) : un aplat sombre (cheveux noirs, cape) n'en est pas ;
+  //  - squelette (amincissement de Zhang-Suen) : une ligne continue de
+  //    l'original donne une chaine continue de cellules, d'1 pixel ;
+  //  - contour de la silhouette traite a part : une cellule du bord devient
+  //    encre si les pixels du bord de l'original, autour d'elle, sont encres ;
+  //    le squelette de ce meme contour (juste a l'interieur) est ignore, sinon
+  //    il doublait le trait.
+  const INK_STROKE = 0.06;  // creux mini sous la fermeture (L OKLab)
+  const INK_MAX_L = 0.45;   // L OKLab maxi d'un trait d'encre
+  const INK_MIN_AREA = 0.004; // part mini d'encre dans le sujet, sinon rien (image sans contours)
+
+  function inkAnalysis(ww, wh, cov, labs, stroke) {
+    const N = ww * wh;
+    const ink = new Uint8Array(N);
+    let nInk = 0, nOp = 0;
+    for (let t = 0; t < N; t++) {
+      if (cov[t] < 0.5) continue;
+      nOp++;
+      if (stroke[t] >= INK_STROKE && labs[t * 3] <= INK_MAX_L) { ink[t] = 1; nInk++; }
+    }
+    if (!nOp || nInk < INK_MIN_AREA * nOp) return null;
+    removeSmallComponents(ink, ww, wh, 4);
+    const skel = thinZhangSuen(ink, ww, wh);
+    let area = 0, len = 0;
+    for (let t = 0; t < N; t++) { area += ink[t]; len += skel[t]; }
+    if (!len) return null;
+    const width = area / len;
+    const dist = distanceToTransparent(cov, ww, wh);
+    // encre "proche" : pour juger si le bord de la silhouette est encre
+    const near = dilate(ink, ww, wh, Math.max(1, Math.round(width / 2)));
+    return { ink, skel, dist, near, width };
+  }
+
+  function removeSmallComponents(m, w, h, minSize) {
+    const seen = new Uint8Array(w * h), stack = [], comp = [];
+    for (let s = 0; s < w * h; s++) {
+      if (!m[s] || seen[s]) continue;
+      stack.push(s); seen[s] = 1; comp.length = 0;
+      while (stack.length) {
+        const t = stack.pop(); comp.push(t);
+        const x = t % w, y = (t / w) | 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const u = yy * w + xx;
+          if (m[u] && !seen[u]) { seen[u] = 1; stack.push(u); }
+        }
+      }
+      if (comp.length < minSize) for (const t of comp) m[t] = 0;
+    }
+  }
+
+  function thinZhangSuen(m, w, h) {
+    const a = Uint8Array.from(m);
+    const P = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? 0 : a[y * w + x];
+    const del = [];
+    for (let changed = true; changed;) {
+      changed = false;
+      for (let step = 0; step < 2; step++) {
+        del.length = 0;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (!a[y * w + x]) continue;
+            const p2 = P(x, y - 1), p3 = P(x + 1, y - 1), p4 = P(x + 1, y), p5 = P(x + 1, y + 1);
+            const p6 = P(x, y + 1), p7 = P(x - 1, y + 1), p8 = P(x - 1, y), p9 = P(x - 1, y - 1);
+            const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+            if (B < 2 || B > 6) continue;
+            const seq = [p2, p3, p4, p5, p6, p7, p8, p9, p2];
+            let A = 0;
+            for (let k = 0; k < 8; k++) if (!seq[k] && seq[k + 1]) A++;
+            if (A !== 1) continue;
+            if (step === 0 ? (p2 && p4 && p6) || (p4 && p6 && p8) : (p2 && p4 && p8) || (p2 && p6 && p8)) continue;
+            del.push(y * w + x);
+          }
+        }
+        for (const i of del) a[i] = 0;
+        if (del.length) changed = true;
+      }
+    }
+    return a;
+  }
+
+  // Distance (8-voisins, en px de travail) au plus proche pixel transparent ;
+  // le dehors de l'image compte comme transparent.
+  function distanceToTransparent(cov, w, h) {
+    const N = w * h, d = new Int32Array(N).fill(-1), queue = new Int32Array(N);
+    let qh = 0, qt = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const t = y * w + x;
+        if (cov[t] < 0.5) { d[t] = 0; continue; }
+        if (x === 0 || y === 0 || x === w - 1 || y === h - 1) { d[t] = 1; queue[qt++] = t; }
+      }
+    }
+    for (let t = 0; t < N; t++) {
+      if (d[t] !== 0) continue;
+      const x = t % w, y = (t / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const u = yy * w + xx;
+        if (d[u] < 0) { d[u] = 1; queue[qt++] = u; }
+      }
+    }
+    while (qh < qt) {
+      const t = queue[qh++], x = t % w, y = (t / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const u = yy * w + xx;
+        if (d[u] < 0) { d[u] = d[t] + 1; queue[qt++] = u; }
+      }
+    }
+    return d;
+  }
+
+  function dilate(m, w, h, r) {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!m[y * w + x]) continue;
+        for (let yy = Math.max(0, y - r); yy <= Math.min(h - 1, y + r); yy++) {
+          for (let xx = Math.max(0, x - r); xx <= Math.min(w - 1, x + r); xx++) out[yy * w + xx] = 1;
+        }
+      }
+    }
+    return out;
+  }
+
   function voteTarget(analysis, palette) {
+    if (analysis.target.ink) return voteTargetInk(analysis, palette);
     const { ww, wh, labs, cov, stroke, cxs, cys } = analysis.target;
     const { nx, ny, opaque } = analysis.cells;
     const K = palette.size, pl = palette.lab;
@@ -1027,6 +1165,110 @@
       }
     }
     return idx;
+  }
+
+  // Vote avec les traits d'encre de l'original (cf. inkAnalysis) : une
+  // cellule est encre si le squelette d'un trait interieur la traverse, ou,
+  // au bord de la silhouette, si l'original y a un contour ; sa couleur est
+  // celle de l'encre (vote sur les pixels d'encre seuls : un contour brun reste
+  // brun). Les autres cellules votent SANS les pixels d'encre : un trait non
+  // retenu ne salit plus la couleur voisine.
+  function voteTargetInk(analysis, palette) {
+    const { ww, wh, labs, cov, cxs, cys, ink } = analysis.target;
+    const { nx, ny, opaque } = analysis.cells;
+    const K = palette.size, pl = palette.lab;
+    const idx = new Int16Array(nx * ny).fill(-1);
+    const votes = new Float64Array(K), iv = new Float64Array(K);
+    // bande du contour de silhouette : son squelette est a ~ largeur/2 du bord
+    const band = Math.max(2, Math.ceil(ink.width * 1.5) + 1);
+    const isOp = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && opaque[j * nx + i];
+    // bord de silhouette de l'original, encre ou non, par cellule
+    const edgeN = new Float64Array(nx * ny), edgeInk = new Float64Array(nx * ny);
+    const cellOf = (b, n, v) => { let k = 0; while (k < n - 1 && b[k + 1] <= v) k++; return k; };
+    const colOf = new Int32Array(ww), rowOf = new Int32Array(wh);
+    for (let x = 0; x < ww; x++) colOf[x] = cellOf(cxs, nx, x);
+    for (let y = 0; y < wh; y++) rowOf[y] = cellOf(cys, ny, y);
+    // Couleur d'encre par cellule, cellules transparentes comprises : le
+    // contour de l'original tombe souvent dans la cellule du dehors (restee
+    // transparente) ; la cellule du bord, elle, n'a alors aucun pixel d'encre
+    // et prendrait la couleur la plus sombre de l'interieur (vert de cape...).
+    const inkVotes = new Float64Array(nx * ny * K);
+    for (let y = 0; y < wh; y++) {
+      for (let x = 0; x < ww; x++) {
+        const t = y * ww + x;
+        const c = rowOf[y] * nx + colOf[x];
+        if (ink.ink[t] && cov[t] >= 0.5) inkVotes[c * K + nearestIndex(labs[t * 3], labs[t * 3 + 1], labs[t * 3 + 2], pl, K)]++;
+        if (ink.dist[t] !== 1) continue;
+        edgeN[c]++;
+        if (ink.near[t]) edgeInk[c]++;
+      }
+    }
+    const nearInkColor = (i, j) => {
+      let best = -1, bv = 0;
+      for (let q = 0; q < K; q++) {
+        let v = 0;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          const ii = i + di, jj = j + dj;
+          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+          v += inkVotes[(jj * nx + ii) * K + q] * (di || dj ? 1 : 4);
+        }
+        if (v > bv) { bv = v; best = q; }
+      }
+      return best;
+    };
+    for (let j = 0; j < ny; j++) {
+      const y0 = cys[j], y1 = Math.min(wh, Math.max(cys[j] + 1, cys[j + 1])), cy = (y0 + y1) / 2, hy = Math.max(0.5, (y1 - y0) / 2);
+      for (let i = 0; i < nx; i++) {
+        const c = j * nx + i;
+        if (!opaque[c]) continue;
+        const x0 = cxs[i], x1 = Math.min(ww, Math.max(cxs[i] + 1, cxs[i + 1])), cx = (x0 + x1) / 2, hx = Math.max(0.5, (x1 - x0) / 2);
+        votes.fill(0); iv.fill(0);
+        let nOp = 0, nInk = 0, sk = 0;
+        for (let y = y0; y < y1; y++) {
+          const wy = 1 - 0.5 * Math.min(1, Math.abs(y + 0.5 - cy) / hy);
+          for (let x = x0; x < x1; x++) {
+            const t = y * ww + x;
+            if (cov[t] < 0.5) continue;
+            const p = nearestIndex(labs[t * 3], labs[t * 3 + 1], labs[t * 3 + 2], pl, K);
+            const wx = 1 - 0.5 * Math.min(1, Math.abs(x + 0.5 - cx) / hx);
+            if (ink.ink[t]) { iv[p] += 1; nInk++; } else { votes[p] += wx * wy; nOp++; }
+            if (ink.skel[t] && ink.dist[t] > band) sk++;
+          }
+        }
+        if (!nOp && !nInk) continue;
+        const border = !isOp(i - 1, j) || !isOp(i + 1, j) || !isOp(i, j - 1) || !isOp(i, j + 1);
+        // le trait doit TRAVERSER la cellule (longueur ~ un tiers de la cellule) :
+        // un coin rogne en passant doublait les traits en escalier
+        let inked = sk >= Math.max(1, 0.35 * Math.min(x1 - x0, y1 - y0));
+        if (border) {
+          // contour de la silhouette : bord de l'original encre autour de la cellule
+          let n = 0, e = 0;
+          for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+            const ii = i + di, jj = j + dj;
+            if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+            n += edgeN[jj * nx + ii]; e += edgeInk[jj * nx + ii];
+          }
+          inked = n > 0 ? e >= 0.5 * n : inked;
+        }
+        let best = -1;
+        if (inked) {
+          // encre de la cellule et de ses voisines (la sienne compte 4 fois)
+          best = nearInkColor(i, j);
+          if (best < 0) best = darkestOf(votes, pl, K);
+        } else {
+          for (let q = 0; q < K; q++) if (votes[q] > 0 && (best < 0 || votes[q] > votes[best])) best = q;
+          if (best < 0) for (let q = 0; q < K; q++) if (iv[q] > 0 && (best < 0 || iv[q] > iv[best])) best = q;
+        }
+        idx[c] = best;
+      }
+    }
+    return idx;
+  }
+
+  function darkestOf(votes, pl, K) {
+    let best = -1;
+    for (let q = 0; q < K; q++) if (votes[q] > 0 && (best < 0 || pl[q * 3] < pl[best * 3])) best = q;
+    return best < 0 ? 0 : best;
   }
 
   function countColors(img, mask, max) {
