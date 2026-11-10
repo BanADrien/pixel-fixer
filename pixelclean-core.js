@@ -36,6 +36,7 @@
     outlineMode: 'darkest',// 'darkest' | 'selective'
     pixelPerfect: false,   // embellissement : lignes pixel-perfect
     inkLines: true,        // conversion : traits d'encre de l'original -> lignes d'1 pixel
+    tileable: false,       // tuile qui se raccorde : grille calee sur l'image entiere, bords = suite du sol
     sizeMode: 'fixed',    // 'fixed' : taille finale imposee a toutes les images ;
                            // 'auto' : grille detectee si trouvee, sinon taille cible
     force: 'auto',         // 'auto' | 'grid' (grille detectee) | 'target' (taille cible)
@@ -910,6 +911,9 @@
       }
     }
     if (bx1 < 0) { bx0 = 0; by0 = 0; bx1 = W - 1; by1 = H - 1; }
+    // Tuile : la grille part du coin de l'image (et non du sujet), pour que
+    // les bords des cases tombent sur les bords de la tuile (raccords).
+    if (o.tileable) { bx0 = 0; by0 = 0; bx1 = W - 1; by1 = H - 1; }
     const bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
     let nx, ny;
     if (o.targetBy === 'factor') {
@@ -989,7 +993,7 @@
     return {
       grid: { size: Math.min(fx, fy), nx, ny, displayXs: xs, displayYs: ys, bbox: [bx0, by0, bw, bh] },
       cells: { nx, ny, opaque, model: 'target' },
-      target: { ww, wh, q, labs, cov, stroke, cxs, cys, ink: o.inkLines === false ? null : inkAnalysis(ww, wh, cov, labs, stroke) },
+      target: { ww, wh, q, labs, cov, stroke, cxs, cys, ink: o.inkLines === false ? null : inkAnalysis(ww, wh, cov, labs, stroke, !!o.tileable) },
       samples: Float32Array.from(samp),
     };
   }
@@ -1012,7 +1016,7 @@
   const INK_MAX_L = 0.45;   // L OKLab maxi d'un trait d'encre
   const INK_MIN_AREA = 0.004; // part mini d'encre dans le sujet, sinon rien (image sans contours)
 
-  function inkAnalysis(ww, wh, cov, labs, stroke) {
+  function inkAnalysis(ww, wh, cov, labs, stroke, tileable) {
     const N = ww * wh;
     const ink = new Uint8Array(N);
     let nInk = 0, nOp = 0;
@@ -1028,10 +1032,10 @@
     for (let t = 0; t < N; t++) { area += ink[t]; len += skel[t]; }
     if (!len) return null;
     const width = area / len;
-    const dist = distanceToTransparent(cov, ww, wh);
+    const dist = distanceToTransparent(cov, ww, wh, tileable);
     // encre "proche" : pour juger si le bord de la silhouette est encre
     const near = dilate(ink, ww, wh, Math.max(1, Math.round(width / 2)));
-    return { ink, skel, dist, near, width };
+    return { ink, skel, dist, near, width, tileable };
   }
 
   function removeSmallComponents(m, w, h, minSize) {
@@ -1084,15 +1088,16 @@
   }
 
   // Distance (8-voisins, en px de travail) au plus proche pixel transparent ;
-  // le dehors de l'image compte comme transparent.
-  function distanceToTransparent(cov, w, h) {
+  // le dehors de l'image compte comme transparent, sauf pour une tuile (le sol
+  // continue dans la case voisine : pas de contour sur les bords de l'image).
+  function distanceToTransparent(cov, w, h, outsideOpaque) {
     const N = w * h, d = new Int32Array(N).fill(-1), queue = new Int32Array(N);
     let qh = 0, qt = 0;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const t = y * w + x;
         if (cov[t] < 0.5) { d[t] = 0; continue; }
-        if (x === 0 || y === 0 || x === w - 1 || y === h - 1) { d[t] = 1; queue[qt++] = t; }
+        if (!outsideOpaque && (x === 0 || y === 0 || x === w - 1 || y === h - 1)) { d[t] = 1; queue[qt++] = t; }
       }
     }
     for (let t = 0; t < N; t++) {
@@ -1114,6 +1119,8 @@
         if (d[u] < 0) { d[u] = d[t] + 1; queue[qt++] = u; }
       }
     }
+    // tuile pleine : aucun pixel transparent, tout est loin du bord
+    for (let t = 0; t < N; t++) if (d[t] < 0) d[t] = 1 << 30;
     return d;
   }
 
@@ -1181,7 +1188,7 @@
     const votes = new Float64Array(K), iv = new Float64Array(K);
     // bande du contour de silhouette : son squelette est a ~ largeur/2 du bord
     const band = Math.max(2, Math.ceil(ink.width * 1.5) + 1);
-    const isOp = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && opaque[j * nx + i];
+    const isOp = (i, j) => (i < 0 || j < 0 || i >= nx || j >= ny) ? !!ink.tileable : !!opaque[j * nx + i];
     // bord de silhouette de l'original, encre ou non, par cellule
     const edgeN = new Float64Array(nx * ny), edgeInk = new Float64Array(nx * ny);
     const cellOf = (b, n, v) => { let k = 0; while (k < n - 1 && b[k + 1] <= v) k++; return k; };
